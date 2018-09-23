@@ -1,13 +1,16 @@
+//! Save multipart files in requests into temporary files
+//!
+//! # Examples
 //! ```rust
 //! # extern crate actix_web;
 //! # extern crate actix_web_multipart_file;
 //! # extern crate futures;
-//! # use actix_web::{HttpRequest, HttpMessage, FutureResponse, HttpResponse};
-//! # use actix_web_multipart_file::save_files;
+//! # use actix_web::{FutureResponse, HttpResponse};
+//! # use actix_web_multipart_file::Multiparts;
 //! # use futures::Stream;
 //!
-//! fn handle_multipart(req: HttpRequest) -> FutureResponse<HttpResponse> {
-//!     save_files(req.multipart())
+//! fn handle_multipart(multiparts: Multiparts) -> FutureResponse<HttpResponse> {
+//!     multiparts
 //!         .and_then(|field| {
 //!             // do something with field
 //! #           ::futures::future::ok(())
@@ -28,16 +31,18 @@ extern crate tempfile;
 extern crate failure;
 extern crate mime;
 
+use actix_web::dev::AsyncResult;
 use actix_web::error::PayloadError;
 use actix_web::http::header::ContentDisposition;
 use actix_web::http::HeaderMap;
 use actix_web::multipart::Multipart;
 use actix_web::multipart::MultipartItem;
-use actix_web::{HttpResponse, ResponseError};
+use actix_web::{FromRequest, HttpMessage, HttpRequest, HttpResponse, ResponseError};
 use bytes::Bytes;
 use futures::future::Either;
 use futures::prelude::*;
 use futures::stream;
+use futures::Poll;
 use mime::Mime;
 use std::fs::File;
 use std::io::Write;
@@ -135,15 +140,13 @@ where
         .and_then(|tempfile| {
             let file = tempfile.try_clone()?;
             Ok((tempfile, file))
-        })
-        .and_then(|(mut tempfile, mut file)| {
+        }).and_then(|(mut tempfile, mut file)| {
             input
                 .from_err()
                 .and_then(move |bytes| {
                     // FIXME: make it async
                     tempfile.write_all(bytes.as_ref()).map_err(|err| err.into())
-                })
-                .collect()
+                }).collect()
                 .and_then(move |_| {
                     use std::io::{Seek, SeekFrom};
                     // FIXME: make it async
@@ -154,6 +157,26 @@ where
 }
 
 /// save form data with filename into tempfiles
+/// # Examples
+/// ```rust
+/// # extern crate actix_web;
+/// # extern crate actix_web_multipart_file;
+/// # extern crate futures;
+/// # use actix_web::{HttpRequest, HttpMessage, FutureResponse, HttpResponse};
+/// # use actix_web_multipart_file::save_files;
+/// # use futures::Stream;
+///
+/// fn handle_multipart(req: HttpRequest) -> FutureResponse<HttpResponse> {
+///     save_files(req.multipart())
+///         .and_then(|field| {
+///             // do something with field
+/// #           ::futures::future::ok(())
+///         })
+/// # ; unimplemented!()
+///     // ...
+/// }
+///
+/// ```
 pub fn save_files<S>(multipart: Multipart<S>) -> BoxStream<'static, Field, Error>
 where
     S: Stream<Item = Bytes, Error = PayloadError> + 'static,
@@ -212,7 +235,26 @@ where
                     Box::new(fut.into_stream())
                 }
             }
-        })
-        .flatten();
+        }).flatten();
     Box::new(st)
+}
+
+/// An extractor that saves multipart files in requests into temporary files.
+/// See the crate level documentation.
+pub struct Multiparts(BoxStream<'static, Field, Error>);
+
+impl<S> FromRequest<S> for Multiparts {
+    type Config = ();
+    type Result = AsyncResult<Self>;
+    fn from_request(req: &HttpRequest<S>, _: &Self::Config) -> Self::Result {
+        AsyncResult::ok(Multiparts(save_files(req.multipart())))
+    }
+}
+
+impl Stream for Multiparts {
+    type Item = Field;
+    type Error = Error;
+    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
+        self.0.poll()
+    }
 }
