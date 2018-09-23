@@ -1,6 +1,6 @@
 [package]
 name = "actix-web-multipart-file"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Sunrin SHIMURA (keen) <3han5chou7@gmail.com>"]
 description = "save multipart's files into temporary files"
 readme = "README.md"
